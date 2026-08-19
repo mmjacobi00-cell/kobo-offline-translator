@@ -23,7 +23,6 @@ jobs:
             gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf binutils-arm-linux-gnueabihf \
             build-essential cmake ninja-build pkg-config git curl zip python3
           arm-linux-gnueabihf-gcc --version
-          arm-linux-gnueabihf-g++ --version
           rustup target add armv7-unknown-linux-gnueabihf
 
       - name: Checkout upstream plugin
@@ -37,6 +36,19 @@ jobs:
           sh plugin/native/scripts/prepare-translator-rs.sh
           python3 - <<'PY'
           from pathlib import Path
+          # The current translator-rs crate always compiles ocr.rs, but its
+          # coords re-export is incorrectly gated behind OCR features.  For a
+          # text-translation build we can expose coords without enabling an
+          # OCR backend; this avoids pulling tesseract/PP-OCR into the Kobo .so.
+          lib = Path('plugin/native/vendor/translator-rs/src/lib.rs')
+          s = lib.read_text()
+          old = '#[cfg(any(feature = "ppocr", feature = "planar-tracker", feature = "tesseract"))]\npub mod coords;'
+          new = 'pub mod coords;'
+          if old not in s:
+              raise SystemExit('expected coords feature gate not found')
+          lib.write_text(s.replace(old, new, 1))
+
+          # Keep the bridge itself free of optional OCR backends.
           p = Path('plugin/native/bridge/Cargo.toml')
           s = p.read_text()
           s = s.replace('translator = { path = "../vendor/translator-rs", features = ["tesseract"] }', 'translator = { path = "../vendor/translator-rs", default-features = false }')
