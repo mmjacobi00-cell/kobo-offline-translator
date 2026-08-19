@@ -38,27 +38,27 @@ jobs:
             TC_ROOT="$(find /usr/local/x-tools -type f -name 'arm-kobo-linux-gnueabihf-gcc' -printf '%h\n' | head -1)"
           fi
           test -n "$TC_ROOT"
-          echo "TC_ROOT=$TC_ROOT" | tee -a "$GITHUB_ENV"
+          echo "TC_ROOT=$TC_ROOT" >> "$GITHUB_ENV"
           echo "$TC_ROOT" >> "$GITHUB_PATH"
           echo "CC_armv7_unknown_linux_gnueabihf=$TC_ROOT/arm-kobo-linux-gnueabihf-gcc" >> "$GITHUB_ENV"
           echo "CXX_armv7_unknown_linux_gnueabihf=$TC_ROOT/arm-kobo-linux-gnueabihf-g++" >> "$GITHUB_ENV"
           echo "AR_armv7_unknown_linux_gnueabihf=$TC_ROOT/arm-kobo-linux-gnueabihf-ar" >> "$GITHUB_ENV"
           echo "CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=$TC_ROOT/arm-kobo-linux-gnueabihf-gcc" >> "$GITHUB_ENV"
           SYSROOT="$($TC_ROOT/arm-kobo-linux-gnueabihf-gcc -print-sysroot)"
-          echo "SYSROOT=$SYSROOT" | tee -a "$GITHUB_ENV"
-          cat > kobo-toolchain.cmake <<EOF
+          echo "SYSROOT=$SYSROOT" >> "$GITHUB_ENV"
+          cat > kobo-toolchain.cmake <<'CMAKE_EOF'
 set(CMAKE_SYSTEM_NAME Linux)
 set(CMAKE_SYSTEM_PROCESSOR arm)
-set(CMAKE_C_COMPILER $TC_ROOT/arm-kobo-linux-gnueabihf-gcc)
-set(CMAKE_CXX_COMPILER $TC_ROOT/arm-kobo-linux-gnueabihf-g++)
-set(CMAKE_AR $TC_ROOT/arm-kobo-linux-gnueabihf-ar)
-set(CMAKE_SYSROOT $SYSROOT)
-set(CMAKE_FIND_ROOT_PATH $SYSROOT)
+set(CMAKE_C_COMPILER "${TC_ROOT}/arm-kobo-linux-gnueabihf-gcc")
+set(CMAKE_CXX_COMPILER "${TC_ROOT}/arm-kobo-linux-gnueabihf-g++")
+set(CMAKE_AR "${TC_ROOT}/arm-kobo-linux-gnueabihf-ar")
+set(CMAKE_SYSROOT "${SYSROOT}")
+set(CMAKE_FIND_ROOT_PATH "${SYSROOT}")
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
-EOF
+CMAKE_EOF
           echo "CMAKE_TOOLCHAIN_FILE=$GITHUB_WORKSPACE/kobo-toolchain.cmake" >> "$GITHUB_ENV"
           "$TC_ROOT/arm-kobo-linux-gnueabihf-gcc" -v 2>&1 | tail -20
 
@@ -74,17 +74,6 @@ EOF
           s = p.read_text()
           s = s.replace('translator = { path = "../vendor/translator-rs", features = ["tesseract"] }', 'translator = { path = "../vendor/translator-rs", default-features = false }')
           s = s.replace('[features]\ndefault = ["ppocr", "manga-ocr"]', '[features]\ndefault = []\ntesseract = ["translator/tesseract"]')
-          p.write_text(s)
-
-          p = Path('plugin/native/bridge/src/lib.rs')
-          s = p.read_text()
-          s = s.replace('use translator::tesseract::{DetectedWord, PageSegMode, TesseractWrapper};', '#[cfg(feature = "tesseract")]\nuse translator::tesseract::{DetectedWord, PageSegMode, TesseractWrapper};')
-          s = s.replace('fn compact_ocr_text(', '#[cfg(feature = "tesseract")]\nfn compact_ocr_text(')
-          s = s.replace('fn vertical_text_from_words(', '#[cfg(feature = "tesseract")]\nfn vertical_text_from_words(')
-          s = s.replace('fn page_seg_mode_from_name(', '#[cfg(feature = "tesseract")]\nfn page_seg_mode_from_name(')
-          s = s.replace('fn ocr_rgba_impl(', '#[cfg(feature = "tesseract")]\nfn ocr_rgba_impl(')
-          marker = '#[unsafe(no_mangle)]\npub extern "C" fn koreader_offlinetranslator_ocr_rgba('
-          s = s.replace(marker, '#[cfg(feature = "tesseract")]\n' + marker)
           p.write_text(s)
           PY
 
