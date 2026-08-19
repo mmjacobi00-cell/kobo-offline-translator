@@ -15,7 +15,8 @@ jobs:
       - name: Install build prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install -y git curl build-essential cmake ninja-build pkg-config python3 unzip zip clang
+          sudo apt-get install -y git curl build-essential cmake ninja-build pkg-config python3 unzip zip clang perl
+          rustup target add armv7-unknown-linux-gnueabihf
 
       - name: Checkout upstream plugin
         run: git clone --depth 1 https://github.com/anezih/offlinetranslator.koplugin.git upstream
@@ -23,29 +24,93 @@ jobs:
       - name: Checkout KOReader
         run: git clone --depth 1 https://github.com/koreader/koreader.git koreader
 
-      - name: Fetch KOReader third-party/toolchain components
-        working-directory: koreader
-        run: ./kodev fetch-thirdparty
-
-      - name: Show Kobo toolchain
+      - name: Fetch exact KOReader Kobo toolchain
         working-directory: koreader
         run: |
-          ./kodev build --no-build kobo || true
-          find base/toolchain -maxdepth 4 -type f \( -name '*gcc' -o -name '*g++' -o -name '*clang' \) | head -50 || true
+          ./kodev fetch-thirdparty
+          ./kodev build --no-build kobo
 
-      - name: Prepare source snapshot
+      - name: Configure Kobo cross compiler
         run: |
-          mkdir -p package/koreader/plugins
-          cp -a upstream package/koreader/plugins/offlinetranslator.koplugin
-          rm -rf package/koreader/plugins/offlinetranslator.koplugin/.git
+          set -eux
+          TC_ROOT="$(find koreader/base -type f -name 'arm-kobo-linux-gnueabihf-gcc' -printf '%h\n' | head -1)"
+          if [ -z "$TC_ROOT" ]; then
+            TC_ROOT="$(find /usr/local/x-tools -type f -name 'arm-kobo-linux-gnueabihf-gcc' -printf '%h\n' | head -1)"
+          fi
+          test -n "$TC_ROOT"
+          echo "TC_ROOT=$TC_ROOT" | tee -a "$GITHUB_ENV"
+          echo "$TC_ROOT" >> "$GITHUB_PATH"
+          echo "CC_armv7_unknown_linux_gnueabihf=$TC_ROOT/arm-kobo-linux-gnueabihf-gcc" >> "$GITHUB_ENV"
+          echo "CXX_armv7_unknown_linux_gnueabihf=$TC_ROOT/arm-kobo-linux-gnueabihf-g++" >> "$GITHUB_ENV"
+          echo "AR_armv7_unknown_linux_gnueabihf=$TC_ROOT/arm-kobo-linux-gnueabihf-ar" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=$TC_ROOT/arm-kobo-linux-gnueabihf-gcc" >> "$GITHUB_ENV"
+          SYSROOT="$($TC_ROOT/arm-kobo-linux-gnueabihf-gcc -print-sysroot)"
+          echo "SYSROOT=$SYSROOT" | tee -a "$GITHUB_ENV"
+          cat > kobo-toolchain.cmake <<EOF
+set(CMAKE_SYSTEM_NAME Linux)
+set(CMAKE_SYSTEM_PROCESSOR arm)
+set(CMAKE_C_COMPILER $TC_ROOT/arm-kobo-linux-gnueabihf-gcc)
+set(CMAKE_CXX_COMPILER $TC_ROOT/arm-kobo-linux-gnueabihf-g++)
+set(CMAKE_AR $TC_ROOT/arm-kobo-linux-gnueabihf-ar)
+set(CMAKE_SYSROOT $SYSROOT)
+set(CMAKE_FIND_ROOT_PATH $SYSROOT)
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
+EOF
+          echo "CMAKE_TOOLCHAIN_FILE=$GITHUB_WORKSPACE/kobo-toolchain.cmake" >> "$GITHUB_ENV"
+          "$TC_ROOT/arm-kobo-linux-gnueabihf-gcc" -v 2>&1 | tail -20
 
-      - name: Package source for inspection
+      - name: Prepare upstream source for translation-only Kobo build
         run: |
-          cd package
-          zip -r ../kobo-offline-translator-source.zip koreader
+          set -eux
+          cp -a upstream plugin
+          rm -rf plugin/.git
+          sh plugin/native/scripts/prepare-translator-rs.sh
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('plugin/native/bridge/Cargo.toml')
+          s = p.read_text()
+          s = s.replace('translator = { path = "../vendor/translator-rs", features = ["tesseract"] }', 'translator = { path = "../vendor/translator-rs", default-features = false }')
+          s = s.replace('[features]\ndefault = ["ppocr", "manga-ocr"]', '[features]\ndefault = []\ntesseract = ["translator/tesseract"]')
+          p.write_text(s)
 
-      - name: Upload source artifact
+          p = Path('plugin/native/bridge/src/lib.rs')
+          s = p.read_text()
+          s = s.replace('use translator::tesseract::{DetectedWord, PageSegMode, TesseractWrapper};', '#[cfg(feature = "tesseract")]\nuse translator::tesseract::{DetectedWord, PageSegMode, TesseractWrapper};')
+          s = s.replace('fn compact_ocr_text(', '#[cfg(feature = "tesseract")]\nfn compact_ocr_text(')
+          s = s.replace('fn vertical_text_from_words(', '#[cfg(feature = "tesseract")]\nfn vertical_text_from_words(')
+          s = s.replace('fn page_seg_mode_from_name(', '#[cfg(feature = "tesseract")]\nfn page_seg_mode_from_name(')
+          s = s.replace('fn ocr_rgba_impl(', '#[cfg(feature = "tesseract")]\nfn ocr_rgba_impl(')
+          marker = '#[unsafe(no_mangle)]\npub extern "C" fn koreader_offlinetranslator_ocr_rgba('
+          s = s.replace(marker, '#[cfg(feature = "tesseract")]\n' + marker)
+          p.write_text(s)
+          PY
+
+      - name: Build native translation library for Kobo ARM
+        working-directory: plugin/native/bridge
+        env:
+          CFLAGS: "-march=armv7-a -mfpu=neon -mfloat-abi=hard"
+          CXXFLAGS: "-march=armv7-a -mfpu=neon -mfloat-abi=hard"
+          RUSTFLAGS: "-C target-cpu=cortex-a8 -C target-feature=+neon -A dead_code"
+        run: |
+          cargo build --release --target armv7-unknown-linux-gnueabihf --no-default-features
+
+      - name: Package Kobo plugin
+        run: |
+          set -eux
+          OUT=dist/offlinetranslator.koplugin
+          mkdir -p "$OUT/libs/linux/armv7l"
+          cp plugin/*.lua "$OUT/"
+          cp plugin/README.md "$OUT/"
+          cp -a plugin/resources "$OUT/"
+          cp plugin/native/bridge/target/armv7-unknown-linux-gnueabihf/release/libofflinetranslator.so "$OUT/libs/linux/armv7l/"
+          cd dist
+          zip -r ../offlinetranslator-kobo-clara-bw.zip offlinetranslator.koplugin
+
+      - name: Upload Kobo plugin
         uses: actions/upload-artifact@v4
         with:
-          name: kobo-offline-translator-source
-          path: kobo-offline-translator-source.zip
+          name: offlinetranslator-kobo-clara-bw
+          path: offlinetranslator-kobo-clara-bw.zip
