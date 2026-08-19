@@ -34,19 +34,6 @@ jobs:
           cp -a upstream plugin
           rm -rf plugin/.git
           sh plugin/native/scripts/prepare-translator-rs.sh
-          python3 - <<'PY'
-          from pathlib import Path
-          # Restore the upstream translator feature configuration.  The
-          # previous translation-only experiment disabled shared OCR geometry
-          # modules (coords/homography), which are currently compiled as part
-          # of translator-rs.  Start from the known-good upstream feature set
-          # and remove only the bridge's extra manga OCR feature.
-          p = Path('plugin/native/bridge/Cargo.toml')
-          s = p.read_text()
-          s = s.replace('translator = { path = "../vendor/translator-rs", default-features = false }', 'translator = { path = "../vendor/translator-rs", features = ["tesseract"] }')
-          s = s.replace('[features]\ndefault = ["ppocr", "manga-ocr"]', '[features]\ndefault = ["ppocr"]\nmanga-ocr = ["dep:anyhow", "dep:ndarray", "dep:ort", "dep:serde", "dep:tokenizers"]')
-          p.write_text(s)
-          PY
 
       - name: Build native translation library for Kobo ARM
         working-directory: plugin/native/bridge
