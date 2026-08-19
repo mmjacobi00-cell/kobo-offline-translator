@@ -44,6 +44,7 @@ jobs:
           CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
           CFLAGS: -march=armv7-a -mfpu=neon -mfloat-abi=hard
           CXXFLAGS: -march=armv7-a -mfpu=neon -mfloat-abi=hard
+          BINDGEN_EXTRA_CLANG_ARGS: -include stdatomic.h
           RUSTFLAGS: -C target-cpu=cortex-a8 -C target-feature=+neon -A dead_code
         run: cargo build --release --target armv7-unknown-linux-gnueabihf --features ppocr
 
