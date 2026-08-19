@@ -16,48 +16,43 @@ jobs:
       - name: Install build prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install -y git curl build-essential cmake ninja-build pkg-config python3 unzip zip clang perl
+          sudo apt-get install -y build-essential autoconf automake bison flex gawk libtool libtool-bin libncurses-dev curl file git gperf help2man texinfo unzip wget cmake ninja-build pkg-config python3 zip clang perl
           rustup target add armv7-unknown-linux-gnueabihf
 
-      - name: Checkout upstream plugin
-        run: git clone --depth 1 https://github.com/anezih/offlinetranslator.koplugin.git upstream
-
-      - name: Checkout KOReader
-        run: git clone --depth 1 https://github.com/koreader/koreader.git koreader
-
-      - name: Fetch KOReader Kobo toolchain
-        working-directory: koreader
+      - name: Build exact KOReader Kobo cross-toolchain
         run: |
-          ./kodev fetch-thirdparty
-          ./kodev build --no-build kobo
+          set -eux
+          git clone --depth 1 https://github.com/koreader/koxtoolchain.git koxtoolchain
+          cd koxtoolchain
+          ./gen-tc.sh kobo
+          echo "$HOME/x-tools/arm-kobo-linux-gnueabihf/bin" >> "$GITHUB_PATH"
+          echo "CROSS=$HOME/x-tools/arm-kobo-linux-gnueabihf/bin/arm-kobo-linux-gnueabihf" >> "$GITHUB_ENV"
+          echo "SYSROOT=$HOME/x-tools/arm-kobo-linux-gnueabihf/arm-kobo-linux-gnueabihf/sysroot" >> "$GITHUB_ENV"
 
       - name: Configure Kobo cross compiler
         run: |
           set -eux
-          TC_ROOT=$(find koreader/base /usr/local/x-tools -type f -name 'arm-kobo-linux-gnueabihf-gcc' -printf '%h\n' 2>/dev/null | head -1)
-          test -n "$TC_ROOT"
-          echo "TC_ROOT=$TC_ROOT" >> "$GITHUB_ENV"
-          echo "$TC_ROOT" >> "$GITHUB_PATH"
-          echo "CC_armv7_unknown_linux_gnueabihf=$TC_ROOT/arm-kobo-linux-gnueabihf-gcc" >> "$GITHUB_ENV"
-          echo "CXX_armv7_unknown_linux_gnueabihf=$TC_ROOT/arm-kobo-linux-gnueabihf-g++" >> "$GITHUB_ENV"
-          echo "AR_armv7_unknown_linux_gnueabihf=$TC_ROOT/arm-kobo-linux-gnueabihf-ar" >> "$GITHUB_ENV"
-          echo "CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=$TC_ROOT/arm-kobo-linux-gnueabihf-gcc" >> "$GITHUB_ENV"
-          SYSROOT=$($TC_ROOT/arm-kobo-linux-gnueabihf-gcc -print-sysroot)
-          echo "SYSROOT=$SYSROOT" >> "$GITHUB_ENV"
+          test -x "$CROSS-gcc"
+          test -x "$CROSS-g++"
+          test -x "$CROSS-ar"
+          "$CROSS-gcc" -v
+          SYSROOT="$SYSROOT"
           printf '%s\n' \
             'set(CMAKE_SYSTEM_NAME Linux)' \
             'set(CMAKE_SYSTEM_PROCESSOR arm)' \
-            "set(CMAKE_C_COMPILER $TC_ROOT/arm-kobo-linux-gnueabihf-gcc)" \
-            "set(CMAKE_CXX_COMPILER $TC_ROOT/arm-kobo-linux-gnueabihf-g++)" \
-            "set(CMAKE_AR $TC_ROOT/arm-kobo-linux-gnueabihf-ar)" \
+            "set(CMAKE_C_COMPILER $CROSS-gcc)" \
+            "set(CMAKE_CXX_COMPILER $CROSS-g++)" \
+            "set(CMAKE_AR $CROSS-ar)" \
             "set(CMAKE_SYSROOT $SYSROOT)" \
             "set(CMAKE_FIND_ROOT_PATH $SYSROOT)" \
             'set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)' \
             'set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)' \
             'set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)' \
-            'set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)' > kobo-toolchain.cmake
+            'set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)' > "$GITHUB_WORKSPACE/kobo-toolchain.cmake"
           echo "CMAKE_TOOLCHAIN_FILE=$GITHUB_WORKSPACE/kobo-toolchain.cmake" >> "$GITHUB_ENV"
-          $TC_ROOT/arm-kobo-linux-gnueabihf-gcc -v
+
+      - name: Checkout upstream plugin
+        run: git clone --depth 1 https://github.com/anezih/offlinetranslator.koplugin.git upstream
 
       - name: Prepare translation-only source
         run: |
@@ -65,11 +60,28 @@ jobs:
           cp -a upstream plugin
           rm -rf plugin/.git
           sh plugin/native/scripts/prepare-translator-rs.sh
-          python3 -c "from pathlib import Path; p=Path('plugin/native/bridge/Cargo.toml'); s=p.read_text(); s=s.replace('translator = { path = \"../vendor/translator-rs\", features = [\"tesseract\"] }', 'translator = { path = \"../vendor/translator-rs\", default-features = false }'); s=s.replace('[features]\\ndefault = [\"ppocr\", \"manga-ocr\"]', '[features]\\ndefault = []\\ntesseract = [\"translator/tesseract\"]'); p.write_text(s)"
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("plugin/native/bridge/Cargo.toml")
+          s = p.read_text()
+          s = s.replace(
+              'translator = { path = "../vendor/translator-rs", features = ["tesseract"] }',
+              'translator = { path = "../vendor/translator-rs", default-features = false }'
+          )
+          s = s.replace(
+              '[features]\ndefault = ["ppocr", "manga-ocr"]',
+              '[features]\ndefault = []\ntesseract = ["translator/tesseract"]'
+          )
+          p.write_text(s)
+          PY
 
       - name: Build native translation library for Kobo ARM
         working-directory: plugin/native/bridge
         env:
+          CC_armv7_unknown_linux_gnueabihf: ${{ env.CROSS }}-gcc
+          CXX_armv7_unknown_linux_gnueabihf: ${{ env.CROSS }}-g++
+          AR_armv7_unknown_linux_gnueabihf: ${{ env.CROSS }}-ar
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: ${{ env.CROSS }}-gcc
           CFLAGS: -march=armv7-a -mfpu=neon -mfloat-abi=hard
           CXXFLAGS: -march=armv7-a -mfpu=neon -mfloat-abi=hard
           RUSTFLAGS: -C target-cpu=cortex-a8 -C target-feature=+neon -A dead_code
