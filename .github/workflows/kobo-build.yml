@@ -1,0 +1,51 @@
+name: Build Kobo offline translator
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git curl build-essential cmake ninja-build pkg-config python3 unzip zip clang
+
+      - name: Checkout upstream plugin
+        run: git clone --depth 1 https://github.com/anezih/offlinetranslator.koplugin.git upstream
+
+      - name: Checkout KOReader
+        run: git clone --depth 1 https://github.com/koreader/koreader.git koreader
+
+      - name: Fetch KOReader third-party/toolchain components
+        working-directory: koreader
+        run: ./kodev fetch-thirdparty
+
+      - name: Show Kobo toolchain
+        working-directory: koreader
+        run: |
+          ./kodev build --no-build kobo || true
+          find base/toolchain -maxdepth 4 -type f \( -name '*gcc' -o -name '*g++' -o -name '*clang' \) | head -50 || true
+
+      - name: Prepare source snapshot
+        run: |
+          mkdir -p package/koreader/plugins
+          cp -a upstream package/koreader/plugins/offlinetranslator.koplugin
+          rm -rf package/koreader/plugins/offlinetranslator.koplugin/.git
+
+      - name: Package source for inspection
+        run: |
+          cd package
+          zip -r ../kobo-offline-translator-source.zip koreader
+
+      - name: Upload source artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kobo-offline-translator-source
+          path: kobo-offline-translator-source.zip
