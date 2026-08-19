@@ -3,60 +3,60 @@ name: Build Kobo offline translator
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
+    branches: [main]
 
 jobs:
   build:
     runs-on: ubuntu-22.04
+    timeout-minutes: 90
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+
+      - name: Restore Kobo toolchain cache
+        id: tc-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/x-tools/arm-kobo-linux-gnueabihf
+          key: kobo-toolchain-v1-${{ runner.os }}-22.04
 
       - name: Install build prerequisites
+        env:
+          DEBIAN_FRONTEND: noninteractive
+          NEEDRESTART_MODE: a
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential autoconf automake bison flex gawk libtool libtool-bin libncurses-dev curl file git gperf help2man texinfo unzip wget cmake ninja-build pkg-config python3 zip clang perl
+          set -euxo pipefail
+          sudo -n apt-get -o Acquire::Retries=3 update
+          sudo -n apt-get -o Acquire::Retries=3 -y install \
+            build-essential autoconf automake bison flex gawk libtool libtool-bin \
+            libncurses-dev curl file git gperf help2man texinfo unzip wget \
+            cmake ninja-build pkg-config python3 zip clang perl
           rustup target add armv7-unknown-linux-gnueabihf
 
       - name: Build exact KOReader Kobo cross-toolchain
+        if: steps.tc-cache.outputs.cache-hit != 'true'
         run: |
-          set -eux
+          set -euxo pipefail
           git clone --depth 1 https://github.com/koreader/koxtoolchain.git koxtoolchain
           cd koxtoolchain
           ./gen-tc.sh kobo
-          echo "$HOME/x-tools/arm-kobo-linux-gnueabihf/bin" >> "$GITHUB_PATH"
-          echo "CROSS=$HOME/x-tools/arm-kobo-linux-gnueabihf/bin/arm-kobo-linux-gnueabihf" >> "$GITHUB_ENV"
-          echo "SYSROOT=$HOME/x-tools/arm-kobo-linux-gnueabihf/arm-kobo-linux-gnueabihf/sysroot" >> "$GITHUB_ENV"
 
       - name: Configure Kobo cross compiler
         run: |
-          set -eux
-          test -x "$CROSS-gcc"
-          test -x "$CROSS-g++"
-          test -x "$CROSS-ar"
-          "$CROSS-gcc" -v
-          SYSROOT="$SYSROOT"
-          printf '%s\n' \
-            'set(CMAKE_SYSTEM_NAME Linux)' \
-            'set(CMAKE_SYSTEM_PROCESSOR arm)' \
-            "set(CMAKE_C_COMPILER $CROSS-gcc)" \
-            "set(CMAKE_CXX_COMPILER $CROSS-g++)" \
-            "set(CMAKE_AR $CROSS-ar)" \
-            "set(CMAKE_SYSROOT $SYSROOT)" \
-            "set(CMAKE_FIND_ROOT_PATH $SYSROOT)" \
-            'set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)' \
-            'set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)' \
-            'set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)' \
-            'set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)' > "$GITHUB_WORKSPACE/kobo-toolchain.cmake"
-          echo "CMAKE_TOOLCHAIN_FILE=$GITHUB_WORKSPACE/kobo-toolchain.cmake" >> "$GITHUB_ENV"
+          set -euxo pipefail
+          export PATH="$HOME/x-tools/arm-kobo-linux-gnueabihf/bin:$PATH"
+          echo "$HOME/x-tools/arm-kobo-linux-gnueabihf/bin" >> "$GITHUB_PATH"
+          echo "CROSS=$HOME/x-tools/arm-kobo-linux-gnueabihf/bin/arm-kobo-linux-gnueabihf" >> "$GITHUB_ENV"
+          echo "SYSROOT=$HOME/x-tools/arm-kobo-linux-gnueabihf/arm-kobo-linux-gnueabihf/sysroot" >> "$GITHUB_ENV"
+          test -x "$HOME/x-tools/arm-kobo-linux-gnueabihf/bin/arm-kobo-linux-gnueabihf-gcc"
+          "$HOME/x-tools/arm-kobo-linux-gnueabihf/bin/arm-kobo-linux-gnueabihf-gcc" -v
 
       - name: Checkout upstream plugin
         run: git clone --depth 1 https://github.com/anezih/offlinetranslator.koplugin.git upstream
 
       - name: Prepare translation-only source
         run: |
-          set -eux
+          set -euxo pipefail
           cp -a upstream plugin
           rm -rf plugin/.git
           sh plugin/native/scripts/prepare-translator-rs.sh
@@ -89,7 +89,7 @@ jobs:
 
       - name: Package Kobo plugin
         run: |
-          set -eux
+          set -euxo pipefail
           OUT=dist/offlinetranslator.koplugin
           mkdir -p "$OUT/libs/linux/armv7l"
           cp plugin/*.lua "$OUT/"
