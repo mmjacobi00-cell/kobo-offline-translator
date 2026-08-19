@@ -28,7 +28,7 @@ jobs:
       - name: Checkout upstream plugin
         run: git clone --depth 1 https://github.com/anezih/offlinetranslator.koplugin.git upstream
 
-      - name: Prepare translation-only source
+      - name: Prepare upstream translator source
         run: |
           set -euxo pipefail
           cp -a upstream plugin
@@ -36,23 +36,15 @@ jobs:
           sh plugin/native/scripts/prepare-translator-rs.sh
           python3 - <<'PY'
           from pathlib import Path
-          # The current translator-rs crate always compiles ocr.rs, but its
-          # coords re-export is incorrectly gated behind OCR features.  For a
-          # text-translation build we can expose coords without enabling an
-          # OCR backend; this avoids pulling tesseract/PP-OCR into the Kobo .so.
-          lib = Path('plugin/native/vendor/translator-rs/src/lib.rs')
-          s = lib.read_text()
-          old = '#[cfg(any(feature = "ppocr", feature = "planar-tracker", feature = "tesseract"))]\npub mod coords;'
-          new = 'pub mod coords;'
-          if old not in s:
-              raise SystemExit('expected coords feature gate not found')
-          lib.write_text(s.replace(old, new, 1))
-
-          # Keep the bridge itself free of optional OCR backends.
+          # Restore the upstream translator feature configuration.  The
+          # previous translation-only experiment disabled shared OCR geometry
+          # modules (coords/homography), which are currently compiled as part
+          # of translator-rs.  Start from the known-good upstream feature set
+          # and remove only the bridge's extra manga OCR feature.
           p = Path('plugin/native/bridge/Cargo.toml')
           s = p.read_text()
-          s = s.replace('translator = { path = "../vendor/translator-rs", features = ["tesseract"] }', 'translator = { path = "../vendor/translator-rs", default-features = false }')
-          s = s.replace('[features]\ndefault = ["ppocr", "manga-ocr"]', '[features]\ndefault = []\ntesseract = ["translator/tesseract"]')
+          s = s.replace('translator = { path = "../vendor/translator-rs", default-features = false }', 'translator = { path = "../vendor/translator-rs", features = ["tesseract"] }')
+          s = s.replace('[features]\ndefault = ["ppocr", "manga-ocr"]', '[features]\ndefault = ["ppocr"]\nmanga-ocr = ["dep:anyhow", "dep:ndarray", "dep:ort", "dep:serde", "dep:tokenizers"]')
           p.write_text(s)
           PY
 
@@ -66,7 +58,7 @@ jobs:
           CFLAGS: -march=armv7-a -mfpu=neon -mfloat-abi=hard
           CXXFLAGS: -march=armv7-a -mfpu=neon -mfloat-abi=hard
           RUSTFLAGS: -C target-cpu=cortex-a8 -C target-feature=+neon -A dead_code
-        run: cargo build --release --target armv7-unknown-linux-gnueabihf --no-default-features
+        run: cargo build --release --target armv7-unknown-linux-gnueabihf --features ppocr
 
       - name: Verify binary
         run: |
