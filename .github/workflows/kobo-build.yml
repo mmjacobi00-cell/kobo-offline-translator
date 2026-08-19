@@ -44,7 +44,12 @@ jobs:
           CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
           CFLAGS: -march=armv7-a -mfpu=neon -mfloat-abi=hard
           CXXFLAGS: -march=armv7-a -mfpu=neon -mfloat-abi=hard
-          BINDGEN_EXTRA_CLANG_ARGS: -include stdatomic.h
+          # Leptonica's environ.h uses C11 atomic_int when stdatomic is available.
+          # bindgen only needs the opaque l_atomic type for the Rust FFI, so make
+          # it take the non-atomic fallback while generating bindings. This avoids
+          # Clang's cross-target stdatomic mismatch without changing the native
+          # Leptonica build itself.
+          BINDGEN_EXTRA_CLANG_ARGS: -D__STDC_NO_ATOMICS__
           RUSTFLAGS: -C target-cpu=cortex-a8 -C target-feature=+neon -A dead_code
         run: cargo build --release --target armv7-unknown-linux-gnueabihf --features ppocr
 
