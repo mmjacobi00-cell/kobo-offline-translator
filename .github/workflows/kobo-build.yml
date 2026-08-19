@@ -8,48 +8,23 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 90
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Restore Kobo toolchain cache
-        id: tc-cache
-        uses: actions/cache@v4
-        with:
-          path: ~/x-tools/arm-kobo-linux-gnueabihf
-          key: kobo-toolchain-v1-${{ runner.os }}-22.04
-
-      - name: Install build prerequisites
+      - name: Install ARM build tools
         env:
           DEBIAN_FRONTEND: noninteractive
-          NEEDRESTART_MODE: a
         run: |
           set -euxo pipefail
-          sudo -n apt-get -o Acquire::Retries=3 update
-          sudo -n apt-get -o Acquire::Retries=3 -y install \
-            build-essential autoconf automake bison flex gawk libtool libtool-bin \
-            libncurses-dev curl file git gperf help2man texinfo unzip wget \
-            cmake ninja-build pkg-config python3 zip clang perl
+          sudo apt-get update -o Acquire::Retries=3
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf binutils-arm-linux-gnueabihf \
+            build-essential cmake ninja-build pkg-config git curl zip python3
+          arm-linux-gnueabihf-gcc --version
+          arm-linux-gnueabihf-g++ --version
           rustup target add armv7-unknown-linux-gnueabihf
-
-      - name: Build exact KOReader Kobo cross-toolchain
-        if: steps.tc-cache.outputs.cache-hit != 'true'
-        run: |
-          set -euxo pipefail
-          git clone --depth 1 https://github.com/koreader/koxtoolchain.git koxtoolchain
-          cd koxtoolchain
-          ./gen-tc.sh kobo
-
-      - name: Configure Kobo cross compiler
-        run: |
-          set -euxo pipefail
-          export PATH="$HOME/x-tools/arm-kobo-linux-gnueabihf/bin:$PATH"
-          echo "$HOME/x-tools/arm-kobo-linux-gnueabihf/bin" >> "$GITHUB_PATH"
-          echo "CROSS=$HOME/x-tools/arm-kobo-linux-gnueabihf/bin/arm-kobo-linux-gnueabihf" >> "$GITHUB_ENV"
-          echo "SYSROOT=$HOME/x-tools/arm-kobo-linux-gnueabihf/arm-kobo-linux-gnueabihf/sysroot" >> "$GITHUB_ENV"
-          test -x "$HOME/x-tools/arm-kobo-linux-gnueabihf/bin/arm-kobo-linux-gnueabihf-gcc"
-          "$HOME/x-tools/arm-kobo-linux-gnueabihf/bin/arm-kobo-linux-gnueabihf-gcc" -v
 
       - name: Checkout upstream plugin
         run: git clone --depth 1 https://github.com/anezih/offlinetranslator.koplugin.git upstream
@@ -62,30 +37,30 @@ jobs:
           sh plugin/native/scripts/prepare-translator-rs.sh
           python3 - <<'PY'
           from pathlib import Path
-          p = Path("plugin/native/bridge/Cargo.toml")
+          p = Path('plugin/native/bridge/Cargo.toml')
           s = p.read_text()
-          s = s.replace(
-              'translator = { path = "../vendor/translator-rs", features = ["tesseract"] }',
-              'translator = { path = "../vendor/translator-rs", default-features = false }'
-          )
-          s = s.replace(
-              '[features]\ndefault = ["ppocr", "manga-ocr"]',
-              '[features]\ndefault = []\ntesseract = ["translator/tesseract"]'
-          )
+          s = s.replace('translator = { path = "../vendor/translator-rs", features = ["tesseract"] }', 'translator = { path = "../vendor/translator-rs", default-features = false }')
+          s = s.replace('[features]\ndefault = ["ppocr", "manga-ocr"]', '[features]\ndefault = []\ntesseract = ["translator/tesseract"]')
           p.write_text(s)
           PY
 
       - name: Build native translation library for Kobo ARM
         working-directory: plugin/native/bridge
         env:
-          CC_armv7_unknown_linux_gnueabihf: ${{ env.CROSS }}-gcc
-          CXX_armv7_unknown_linux_gnueabihf: ${{ env.CROSS }}-g++
-          AR_armv7_unknown_linux_gnueabihf: ${{ env.CROSS }}-ar
-          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: ${{ env.CROSS }}-gcc
+          CC_armv7_unknown_linux_gnueabihf: arm-linux-gnueabihf-gcc
+          CXX_armv7_unknown_linux_gnueabihf: arm-linux-gnueabihf-g++
+          AR_armv7_unknown_linux_gnueabihf: arm-linux-gnueabihf-ar
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
           CFLAGS: -march=armv7-a -mfpu=neon -mfloat-abi=hard
           CXXFLAGS: -march=armv7-a -mfpu=neon -mfloat-abi=hard
           RUSTFLAGS: -C target-cpu=cortex-a8 -C target-feature=+neon -A dead_code
         run: cargo build --release --target armv7-unknown-linux-gnueabihf --no-default-features
+
+      - name: Verify binary
+        run: |
+          set -euxo pipefail
+          file plugin/native/bridge/target/armv7-unknown-linux-gnueabihf/release/libofflinetranslator.so
+          arm-linux-gnueabihf-readelf -h plugin/native/bridge/target/armv7-unknown-linux-gnueabihf/release/libofflinetranslator.so | grep -E 'Class|Machine|Flags'
 
       - name: Package Kobo plugin
         run: |
